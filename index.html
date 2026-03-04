@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cliente Seguro - Criptografía Híbrida</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; max-width: 600px; margin: auto; }
+        textarea { width: 100%; height: 100px; margin-bottom: 10px; }
+        button { padding: 10px 20px; cursor: pointer; background: #007bff; color: white; border: none; border-radius: 4px; }
+        #status { margin-top: 20px; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+    <h2>Enviar Mensaje Seguro</h2>
+    <textarea id="inputmsj" placeholder="Escribe tu mensaje aquí"></textarea>
+    <br>
+    <button id="btnenvio">Cifrar y Enviar</button>
+    <div id="status"></div>
+
+    <script>
+        const arrayBufferToBase64 = (buffer) => btoa(String.fromCharCode(...new Uint8Array(buffer)));
+        
+        const pemToBinary = (pem) => {
+            const b64 = pem.replace(/-----BEGIN PUBLIC KEY-----|-----END PUBLIC KEY-----|\n|\r/g, '');
+            const binary = atob(b64);
+            const buffer = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) buffer[i] = binary.charCodeAt(i);
+            return buffer.buffer;
+        };
+
+        document.getElementById('btnenvio').addEventListener('click', async () => {
+            const status = document.getElementById('status');
+            const message = document.getElementById('inputmsj').value;
+            
+            if (!message) return alert("Campo vacío, por favor escribe un mensaje.");
+            status.innerText = "Procesando...";
+
+            try {
+                // Obtención de la llave pública del servidoer
+                const response = await fetch('http://localhost:3000/api/public-key');
+                const { publicKey: pemKey } = await response.json();
+
+                // Importar la llave RSA para poder usarla
+                const rsaKey = await window.crypto.subtle.importKey(
+                    "spki",
+                    pemToBinary(pemKey),
+                    { name: "RSA-OAEP", hash: "SHA-256" },
+                    false,
+                    ["encrypt"]
+                );
+
+                // Generar clave simétrica AES-256-CBC y IV
+                const aesKey = await window.crypto.subtle.generateKey(
+                    { name: "AES-CBC", length: 256 },
+                    true,
+                    ["encrypt"]
+                );
+                const iv = window.crypto.getRandomValues(new Uint8Array(16));
+
+                // Cifrar el mensaje con AES
+                const encodedMessage = new TextEncoder().encode(message);
+                const encryptedMessageBuffer = await window.crypto.subtle.encrypt(
+                    { name: "AES-CBC", iv: iv },
+                    aesKey,
+                    encodedMessage
+                );
+
+                // Cifrar la clave AES con la llave pública RSA, con formato binario.
+                const rawAesKey = await window.crypto.subtle.exportKey("raw", aesKey);
+                const encryptedAesKeyBuffer = await window.crypto.subtle.encrypt(
+                    { name: "RSA-OAEP" },
+                    rsaKey,
+                    rawAesKey
+                );
+
+                // Payolad
+                const payload = {
+                    encryptedMessage: arrayBufferToBase64(encryptedMessageBuffer),
+                    encryptedKey: arrayBufferToBase64(encryptedAesKeyBuffer),
+                    iv: arrayBufferToBase64(iv)
+                };
+
+                const res = await fetch('http://localhost:3000/api/secure-message', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (res.ok) {
+                    status.style.color = "green";
+                    status.innerText = "¡Mensaje enviado y descifrado en el servidor!";
+                } else {
+                    throw new Error("Error en el servidor");
+                }
+
+            } catch (error) {
+                console.error(error);
+                status.style.color = "red";
+                status.innerText = "Error: " + error.message;
+            }
+        });
+    </script>
+</body>
+</html>
